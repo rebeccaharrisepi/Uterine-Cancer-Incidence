@@ -461,7 +461,7 @@ write.csv(dat, "mortalitycounts.csv")
 
 
 
-### Import population data and calculate 10-year age groups
+### Import population data and calculate 5-year age groups
 pop <- read_excel("3101059.xlsx", sheet="Data1") %>%
   rename(Year = '...1') %>%
   select(Year | contains(c("Female"))) %>%
