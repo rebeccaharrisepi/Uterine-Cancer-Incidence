@@ -15,8 +15,8 @@ library(cowplot)
 #SECTION 1: Data set-up and categorising histotypes and calculating age-standardised rates
 ##########################################################################################
 #Before beginning download and have in working directory:
-#Cancer datacube 10g: "CDiA-2024-Book-10g-Cancer-incidence-by-histology-vulva-vagina-uterus.xlsx" from AIHW: https://www.aihw.gov.au/reports-data/health-conditions-disability-deaths/cancer/data
-#National population data: Population - Australia Population at 30 June, by sex and single year of age, Aust., from 1971 onwards from:https://www.abs.gov.au/statistics/people/population/national-state-and-territory-population/latest-release#data-downloads
+#Cancer datacube 10g: "CDiA-2024-Book-10g-Cancer-incidence-by-histology-vulva-vagina-uterus.xlsx" from the main branch of this repository
+#National population data: Population - Australia Population at 30 June, by sex and single year of age, Aust., from 1971 onwards from from the main branch of this repository
 #And 'hysterectomyfactions' excel file
 
 dat <- read_excel("CDiA-2024-Book-10g-Cancer-incidence-by-histology-vulva-vagina-uterus.xlsx", 
