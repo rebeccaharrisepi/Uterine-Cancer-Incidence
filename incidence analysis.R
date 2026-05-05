@@ -1,3 +1,6 @@
+###############
+# Load packages
+###############
 
 library(readxl)
 library(tidyverse)
@@ -255,7 +258,7 @@ write.csv(Forattributablerates, "C:/Users/uqrhar23/OneDrive - The University of 
 rm(Forattributablerates)
 
 ##########################################################
-#SECTION 2: Create serous dataset for Sensitivity analyses
+#SECTION 2: Create serous data set for Sensitivity analyses
 ##########################################################
 ###Reassign Carcinosarcoma into a new Serous group
 
@@ -302,8 +305,84 @@ seroustotal <- seroustotal %>%
 write.csv(seroustotal, "C:/Users/uqrhar23/OneDrive - The University of Queensland/Documents/Uterine cancer/Joinpoint/serous.csv", row.names = T)
 rm(seroustotal)
 
+####################################################################################################################################################
+# SECTION 3: Calculating age-standardised rates for <50 and >50 years
+####################################################################################################################################################
+
+
+### generate Dataset with event counts for each Subtype and age group 
+earlyvslate <- dat %>% 
+  filter(Subtype %in% c("Endometrioid", "Serous", "Clear cell", "Total") & !Age %in% c("0–14", "15–24")) %>% 
+  group_by(Subtype, Year, Age) %>% 
+  summarise(Count = sum(Count), .groups = "keep")
+
+earlyvslate <- earlyvslate %>%
+  merge(pop,by=c("Year","Age"), all.x=T, all.y=F) %>%
+  merge(standardpop,by="Age", all.x=T, all.y=F) %>%
+  arrange(Subtype, Year, Age) %>%
+  group_by(Subtype, Year, Age) %>% 
+  mutate(
+    atrisk= withouthyst+Count,
+    atriskstandardpop= withouthyststandardpop+Count,
+    agespecificrate=Count/atrisk,
+    agespecificrate_nc=Count/pop) %>%
+  select(Subtype, Year, Age, Count, atrisk, pop, atriskstandardpop, standardpop, agespecificrate, agespecificrate_nc) %>%
+  mutate(age_group = case_when(
+    Age %in% c("25–34", "35–44", "45–54") ~ "<55",
+    .default="55+")) 
+
+
+###calculating age-standardised rate 
+# First need the 2001 female total population and at risk population for each age group
+totalpop <- earlyvslate %>%
+  filter(Year==2001 & Subtype== "Total") %>%
+  ungroup() %>%
+  summarise(totalpop = sum(pop), .groups = "keep")
+totalatrisk <- earlyvslate %>%
+  filter(Year==2001 & Subtype== "Total") %>%
+  ungroup() %>%
+  summarise(totalatrisk = sum(atrisk), .groups = "keep")
+
+
+earlyvslate <- earlyvslate %>% 
+  mutate(
+    'corrected for hyst' =agespecificrate*atriskstandardpop,
+    'not corrected for hyst'= agespecificrate_nc*standardpop) %>%
+  pivot_longer(c('corrected for hyst', 'not corrected for hyst'), names_to="corrected", values_to="rate") %>%
+  group_by(Subtype, Year, age_group, corrected) %>% 
+  summarise(
+    Count=sum(Count),
+    atrisk = sum(atrisk),
+    pop = sum(pop),
+    atriskstandardpop = sum(atriskstandardpop),
+    standardpop=sum(standardpop),
+    ageadjustedrate = sum(rate)) %>%
+  mutate(ageadjustedrate= case_when(
+    corrected=='corrected for hyst' ~ ageadjustedrate/(totalatrisk$totalatrisk)*100000,
+    corrected=='not corrected for hyst' ~ ageadjustedrate/(totalpop$totalpop)*100000
+  )) %>%
+  ungroup()
+
+
+### export data with event counts to be imported into Joinpoint software
+earlyvslate <- earlyvslate %>%
+  filter(corrected=="corrected for hyst") %>% 
+  select(corrected, Subtype, age_group, Year, Count, atrisk, ageadjustedrate) %>%
+  arrange(corrected, Subtype, age_group) 
+write.csv(earlyvslate, "C:/Users/uqrhar23/OneDrive - The University of Queensland/Documents/Uterine cancer/Joinpoint/earlyonset.csv", row.names = T)
+
+# Combine early and late onset to Age data
+
+Total <- earlyvslate %>%
+  filter(Subtype=="Total" & corrected == "corrected for hyst") %>% 
+  rename(Age = age_group,
+         agespecificrate = ageadjustedrate) %>%
+  select(Age, Year, Count, atrisk, agespecificrate)
+
+Age <- rbind(Age, Total)
+
 ##############################################################################
-# SECTION 3: Preliminary Data Analysis and Plots of cancer counts and rates
+# SECTION 4: Preliminary Data Analysis and Plots of cancer counts and rates
 ##############################################################################
 
 ### All uterine cancer counts by histological subtype from 2001-2020
@@ -343,6 +422,18 @@ dat %>%
   summarise(Count = sum(Count), .groups = "keep")%>%
   filter(!Count==0) %>%
   print(n=30)
+
+### Early and late onset counts
+
+earlyvslate %>% 
+  filter(Subtype=="Total" & corrected=="corrected for hyst") %>%
+  group_by(age_group) %>% 
+  summarise("Number of cases" = sum(Count))
+
+earlyvslate %>% 
+  filter(Subtype=="Total" & corrected=="corrected for hyst" & Year==2001) 
+earlyvslate %>% 
+  filter(Subtype=="Total" & corrected=="corrected for hyst" & Year==2020) 
 
 ### by histotype and year
 dat %>%
@@ -429,11 +520,14 @@ p
 ggsave("Histotype proportion.jpeg", plot=p, width=9, height=6, dpi=300)
 rm(proportions)
 ####################################################################################################################################################
-# SECTION 4: Plotting Age-standardised rate per 100, 000 women corrected and not corrected for hysterectomy alongside trends from joinpoint analysis
+# SECTION 5: Plotting Age-standardised rate per 100, 000 women corrected and not corrected for hysterectomy alongside trends from joinpoint analysis
 ####################################################################################################################################################
 ############
 # By SUBTYPE
 ############
+
+
+options(OutDec = "·")
 joinpoint <- read_excel("histotyperesults.xlsx") %>%
   filter(Year %in% c(2001, 2020) | !is.na(`Joinpoint Location`)) %>%
   mutate(Subtype = word(Cohort, 1),
@@ -464,7 +558,9 @@ APC <- read_excel("histotypeAAPC.xlsx") %>%
     AAPC =as.numeric(AAPC))
 APC$AAPC <- format(round(APC$AAPC, 2), nsmall = 2, trim=TRUE)
 APC <- APC %>%
-  mutate(label = paste0("APC=",AAPC,signif)) %>%
+  mutate(label = case_when(
+    Subtype%in% c("Endometrioid", "Serous") ~ paste0("AAPC=",AAPC,signif),
+    .default = paste0("APC=",AAPC,signif))) %>%
   mutate(
     label = label %>%
       if_else(str_detect(., "\\*$"), ., paste0(., " ")) %>% # Add space if it doesn't end with "*"
@@ -501,7 +597,6 @@ histotype <- histotype %>%
   mutate(corrected = case_when(
     corrected == "corrected for hyst" ~ "Observed hysterectomy-corrected rate",
     corrected == "not corrected for hyst" ~ "Observed hysterectomy-uncorrected rate"))
-
 
 
 
@@ -683,7 +778,8 @@ labels <- joinpoint %>%
 
 
 Age <- Age %>%
-  mutate(observed="Observed Rate")
+  mutate(observed="Observed Rate") %>%
+  filter(Age %in% c("Age–standardised", "25–34", "35–44", "45–54", "55–64", "65–74", "75–84", "85+"))
 
 p <- ggplot() +
   geom_point(data=Age, aes(x=Year, y=agespecificrate, pch=observed, color=Age)) +  
@@ -712,74 +808,273 @@ ggsave("Age.jpeg", plot=p, width=15, height=9, dpi=300)
 
 
 
-####################################################################################################################################################
-# SECTION 5: Calculating age standardised rates for <50 and >50 years
-####################################################################################################################################################
 
 
-### generate Dataset with event counts for each subtype and age group 
-earlyvslate <- dat %>% 
-  filter(Subtype %in% c("Endometrioid", "Serous", "Clear cell", "Total") & !Age %in% c("0–14", "15–24")) %>% 
-  group_by(Subtype, Year, Age) %>% 
-  summarise(Count = sum(Count), .groups = "keep")
+###########################################
+# SECTION 6: PAF calculations for incidence
+###########################################
 
-earlyvslate <- earlyvslate %>%
-  merge(pop,by=c("Year","Age"), all.x=T, all.y=F) %>%
-  merge(standardpop,by="Age", all.x=T, all.y=F) %>%
+library(deltapif)
+
+# PAFs assuming 10-year latent period
+
+dat <- data %>%
+  filter(Subtype %in% c("Total", "Endometrioid", "Serous", "Clear cell") & Year %in% c(2001, 2010, 2020)) %>%
+  select(Subtype, Age, Year) %>%
+  mutate(Subtype = case_when(
+    Subtype=="Total" ~ "Overall",
+    .default=Subtype)) 
+
+prev <- read_excel("OW OB prevalence.xlsx")
+RRs <- read_excel("Relative risks.xlsx")
+
+
+dat <- dat %>%
+  merge(prev, by = c("Year", "Age")) %>% 
+  merge(RRs, by=c("Subtype", "Exposure")) %>%
   arrange(Subtype, Year, Age) %>%
-  group_by(Subtype, Year, Age) %>% 
-  mutate(
-    atrisk= withouthyst+Count,
-    atriskstandardpop= withouthyststandardpop+Count,
-    agespecificrate=Count/atrisk,
-    agespecificrate_nc=Count/pop) %>%
-  select(Subtype, Year, Age, Count, atrisk, pop, atriskstandardpop, standardpop, agespecificrate, agespecificrate_nc) %>%
-  mutate(age_group = case_when(
-  Age %in% c("25–34", "35–44", "45–54") ~ "<55",
-  .default="55+")) 
-
-
-
-
-###calculating age-standardised rate 
-# First need the 2001 female total population and at risk population for each age group
-totalpop <- earlyvslate %>%
-  filter(Year==2001 & Subtype== "Total") %>%
-  ungroup() %>%
-  summarise(totalpop = sum(pop), .groups = "keep")
-totalatrisk <- earlyvslate %>%
-  filter(Year==2001 & Subtype== "Total") %>%
-  ungroup() %>%
-  summarise(totalatrisk = sum(atrisk), .groups = "keep")
-
-
-earlyvslate <- earlyvslate %>% 
-  mutate(
-    'corrected for hyst' =agespecificrate*atriskstandardpop,
-    'not corrected for hyst'= agespecificrate_nc*standardpop) %>%
-  pivot_longer(c('corrected for hyst', 'not corrected for hyst'), names_to="corrected", values_to="rate") %>%
-  group_by(Subtype, Year, age_group, corrected) %>% 
+  mutate(P = Prevalence / 100) %>%
+  group_by(Subtype, Year, Age) %>%
   summarise(
-    Count=sum(Count),
-    atrisk = sum(atrisk),
-    pop = sum(pop),
-    atriskstandardpop = sum(atriskstandardpop),
-    standardpop=sum(standardpop),
-    ageadjustedrate = sum(rate)) %>%
-  mutate(ageadjustedrate= case_when(
-    corrected=='corrected for hyst' ~ ageadjustedrate/(totalatrisk$totalatrisk)*100000,
-    corrected=='not corrected for hyst' ~ ageadjustedrate/(totalpop$totalpop)*100000
-)) %>%
-  ungroup()
+    P_vec = list(P),
+    RR_vec = list(RR),
+    RRLL_vec = list(RRLL),
+    RRUL_vec = list(RRUL),
+    .groups = "drop"
+  )
+results_df <- dat %>%
+  pmap_dfr(function(Year, Age, Subtype, P_vec, RR_vec, RRLL_vec, RRUL_vec) {
+    
+    # Convert lists to vectors
+    P_vec <- unlist(P_vec)
+    RR_vec <- unlist(RR_vec)
+    RRLL_vec <- unlist(RRLL_vec)
+    RRUL_vec <- unlist(RRUL_vec)
+    
+    # Compute log-RR and variance
+    beta <- log(RR_vec)
+    var_beta <- ((log(RRUL_vec) - log(RRLL_vec)) / (2*1.96))^2
+    var_beta[1] <- 0
+    var_beta <- diag(var_beta)
+    
+    # Compute PAF
+    res <- paf(p = P_vec, beta = beta, var_beta = var_beta)
+    
+    # Extract point estimate and CI
+    PAF_val <- coef(res)
+    CI <- confint(res)
+    
+    data.frame(
+      Subtype = Subtype,
+      Age = Age,
+      Year = Year,
+      PAF = round(PAF_val, 2),
+      PAF_LL = round(CI[1], 2),
+      PAF_UL = round(CI[2], 2)
+    )
+  })
+results_df
 
 
-### export data with event counts to be imported into Joinpoint software
-earlyvslate <- earlyvslate %>%
-  filter(corrected=="corrected for hyst") %>% 
-  select(corrected, Subtype, age_group, Year, Count, atrisk, ageadjustedrate) %>%
-  arrange(corrected, Subtype, age_group) 
-write.csv(earlyvslate, "C:/Users/uqrhar23/OneDrive - The University of Queensland/Documents/Uterine cancer/Joinpoint/earlyonset.csv", row.names = T)
+Nobs <- data %>%
+  filter(Subtype %in% c("Total", "Endometrioid", "Serous", "Clear cell")) %>%
+  select(Subtype, Age, Year, Count) %>%
+  mutate(Subtype = case_when(
+    Subtype=="Total" ~ "Overall",
+    .default=Subtype)) %>%
+  rename(Nobs = Count)
 
+results_df <- results_df %>%
+  merge(Nobs, by=c("Subtype", "Year", "Age")) %>%
+  mutate(
+    Nexc = round((Nobs*PAF), 0),
+    Nexc_LL = round((Nobs*PAF_LL),0),
+    Nexc_UL = round((Nobs*PAF_UL),0))
+
+totals <- results_df %>%
+  group_by(Subtype, Year) %>%
+  summarise(
+    Age = "Total",
+    Nobs = sum(Nobs, na.rm = TRUE),
+    Nexc = sum(Nexc, na.rm = TRUE),
+    Nexc_LL = sum(Nexc_LL, na.rm = TRUE),
+    Nexc_UL = sum(Nexc_UL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(PAF = Nexc/Nobs,
+         PAF_LL = Nexc_LL/Nobs,
+         PAF_UL = Nexc_UL/Nobs)
+results_df <- bind_rows(results_df, totals)
+results_df
+
+
+results_wide <- results_df %>%
+  mutate(
+    PAF_pct = round(PAF * 100, 0),
+    LL_pct = round(PAF_LL * 100, 0),
+    UL_pct = round(PAF_UL * 100, 0),
+    PAF_CI = paste0(PAF_pct, " (", LL_pct, ", ", UL_pct, ")"),
+    Nexc_CI = paste0("(", Nexc_LL, ", ", Nexc_UL, ")")
+  ) %>%
+  select(Subtype, Age, Year, PAF_CI, Nobs, Nexc, Nexc_CI) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = c(PAF_CI, Nobs, Nexc, Nexc_CI),
+    names_glue = "{Year}_{.value}"
+  )
+
+# Reorder columns by year 
+years <- c(2001, 2010, 2020)
+order <- c("Overall", "Endometrioid", "Serous", "Clear cell")
+
+results_wide <- results_wide %>%
+  select(
+    Subtype, Age,
+    unlist(lapply(years, function(y) {
+      c(
+        paste0(y, "_PAF_CI"),
+        paste0(y, "_Nobs"),
+        paste0(y, "_Nexc"),
+        paste0(y, "_Nexc_CI")
+      )
+    }))
+  ) %>%
+  mutate(Subtype = fct_relevel(Subtype, order)) %>%
+  arrange(Subtype, Age)
+results_wide
+
+write.csv(results_wide, "PAF incidence.csv")
+
+
+
+# Sensitivity analysis assuming 5-year latent period
+
+dat <- data %>%
+  filter(Subtype %in% c("Total", "Endometrioid", "Serous", "Clear cell") & Year %in% c(2001, 2010, 2020)) %>%
+  select(Subtype, Age, Year) %>%
+  mutate(Subtype = case_when(
+    Subtype=="Total" ~ "Overall",
+    .default=Subtype)) 
+
+prev <- read_excel("OW OB prevalence.xlsx")
+RRs <- read_excel("Relative risks.xlsx")
+
+
+dat <- dat %>%
+  merge(prev, by = c("Year", "Age")) %>% 
+  merge(RRs, by=c("Subtype", "Exposure")) %>%
+  arrange(Subtype, Year, Age) %>%
+  mutate(P = Prevalence_5year / 100) %>%
+  group_by(Subtype, Year, Age) %>%
+  summarise(
+    P_vec = list(P),
+    RR_vec = list(RR),
+    RRLL_vec = list(RRLL),
+    RRUL_vec = list(RRUL),
+    .groups = "drop"
+  )
+results_df <- dat %>%
+  pmap_dfr(function(Year, Age, Subtype, P_vec, RR_vec, RRLL_vec, RRUL_vec) {
+    
+    # Convert lists to vectors
+    P_vec <- unlist(P_vec)
+    RR_vec <- unlist(RR_vec)
+    RRLL_vec <- unlist(RRLL_vec)
+    RRUL_vec <- unlist(RRUL_vec)
+    
+    # Compute log-RR and variance
+    beta <- log(RR_vec)
+    var_beta <- ((log(RRUL_vec) - log(RRLL_vec)) / (2*1.96))^2
+    var_beta[1] <- 0
+    var_beta <- diag(var_beta)
+    
+    # Compute PAF
+    res <- paf(p = P_vec, beta = beta, var_beta = var_beta)
+    
+    # Extract point estimate and CI
+    PAF_val <- coef(res)
+    CI <- confint(res)
+    
+    data.frame(
+      Subtype = Subtype,
+      Age = Age,
+      Year = Year,
+      PAF = round(PAF_val, 2),
+      PAF_LL = round(CI[1], 2),
+      PAF_UL = round(CI[2], 2)
+    )
+  })
+results_df
+
+
+Nobs <- data %>%
+  filter(Subtype %in% c("Total", "Endometrioid", "Serous", "Clear cell")) %>%
+  select(Subtype, Age, Year, Count) %>%
+  mutate(Subtype = case_when(
+    Subtype=="Total" ~ "Overall",
+    .default=Subtype)) %>%
+  rename(Nobs = Count)
+
+results_df <- results_df %>%
+  merge(Nobs, by=c("Subtype", "Year", "Age")) %>%
+  mutate(
+    Nexc = round((Nobs*PAF), 0),
+    Nexc_LL = round((Nobs*PAF_LL),0),
+    Nexc_UL = round((Nobs*PAF_UL),0))
+
+totals <- results_df %>%
+  group_by(Subtype, Year) %>%
+  summarise(
+    Age = "Total",
+    Nobs = sum(Nobs, na.rm = TRUE),
+    Nexc = sum(Nexc, na.rm = TRUE),
+    Nexc_LL = sum(Nexc_LL, na.rm = TRUE),
+    Nexc_UL = sum(Nexc_UL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(PAF = Nexc/Nobs,
+         PAF_LL = Nexc_LL/Nobs,
+         PAF_UL = Nexc_UL/Nobs)
+results_df <- bind_rows(results_df, totals)
+results_df
+
+
+results_wide <- results_df %>%
+  mutate(
+    PAF_pct = round(PAF * 100, 0),
+    LL_pct = round(PAF_LL * 100, 0),
+    UL_pct = round(PAF_UL * 100, 0),
+    PAF_CI = paste0(PAF_pct, " (", LL_pct, ", ", UL_pct, ")"),
+    Nexc_CI = paste0("(", Nexc_LL, ", ", Nexc_UL, ")")
+  ) %>%
+  select(Subtype, Age, Year, PAF_CI, Nobs, Nexc, Nexc_CI) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = c(PAF_CI, Nobs, Nexc, Nexc_CI),
+    names_glue = "{Year}_{.value}"
+  )
+
+# Reorder columns by year 
+years <- c(2001, 2010, 2020)
+order <- c("Overall", "Endometrioid", "Serous", "Clear cell")
+
+results_wide <- results_wide %>%
+  select(
+    Subtype, Age,
+    unlist(lapply(years, function(y) {
+      c(
+        paste0(y, "_PAF_CI"),
+        paste0(y, "_Nobs"),
+        paste0(y, "_Nexc"),
+        paste0(y, "_Nexc_CI")
+      )
+    }))
+  ) %>%
+  mutate(Subtype = fct_relevel(Subtype, order)) %>%
+  arrange(Subtype, Age) 
+
+results_wide
+write.csv(results_wide, "PAF incidence 5 year lag.csv")
 
 
 

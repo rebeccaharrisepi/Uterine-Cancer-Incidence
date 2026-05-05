@@ -1,21 +1,25 @@
-###############################
-# Section 4: Mortality analysis
-###############################
-
+###############
+# Load packages
+###############
 library(readxl)
 library(tidyverse)
 library(janitor)
 library(cowplot)
 
-dat<- read_excel("CDiA-2024-Book-2a-Cancer-mortality-and-age-standardised-rates-by-age-5-year-groups.xlsx", sheet = "Table S2a.1", skip = 5) %>%
+
+###############################
+# Section 1: Mortality analysis
+###############################
+
+data<- read_excel("CDiA-2024-Book-2a-Cancer-mortality-and-age-standardised-rates-by-age-5-year-groups.xlsx", sheet = "Table S2a.1", skip = 5) %>%
   janitor::clean_names() %>%
   filter(cancer_group_site=="Uterine cancer" & sex=="Females" & data_type=="Actual" & year>2000 & !age_group_years %in% c("00-04", "05-09", "10-14", "15-19", "20-24", "All ages combined")) %>%
   rename(Year= year,
          Age=age_group_years,
          Count = count) %>%
   select(Year, Age, Count)  
-dat$Age <- gsub("-", "–", dat$Age)
-dat <- dat %>%
+data$Age <- gsub("-", "–", data$Age)
+data <- data %>%
   pivot_wider(names_from=Age,
               values_from = Count,
               names_prefix = "Age") %>%
@@ -38,9 +42,6 @@ dat <- dat %>%
     Age == "age65" ~ "65–74",
     Age == "age75" ~ "75–84",
     Age == "age85" ~ "85+"))
-write.csv(dat, "mortalitycounts.csv")
-
-
 
 
 ### Import population data and calculate 10-year age groups
@@ -127,7 +128,7 @@ standardpop <- pop %>%
   select(!Year) %>%
   rename(withouthyststandardpop = withouthyst) %>%
   rename(standardpop= pop)
-Age <- dat %>%
+Age <- data %>%
   merge(pop,by=c("Year","Age")) %>%
   merge(standardpop,by="Age") %>%
   mutate(
@@ -161,13 +162,6 @@ agestandardised <- Age %>%
   select(corrected, Year, ageadjustedrate) %>%
   arrange(corrected, Year)
 
-
-PAFs <- Age %>%
-  filter(Year %in% c(2001, 2010, 2020)) %>%
-  select(Age, Year, Count, atrisk)
-write.csv(PAFs, "C:/Users/uqrhar23/OneDrive - The University of Queensland/Documents/Uterine cancer/Joinpoint/For mortality PAF calculation.csv")
-
-
 agestandardised <- agestandardised %>%
   mutate(Age = "Age–standardised") %>%
   rename(rate = ageadjustedrate) %>%
@@ -182,12 +176,15 @@ Age <- rbind(Age, agestandardised) %>%
   arrange(Age, corrected, Year)
 write.csv(Age, "mortalityAge.csv")
 
-###########################################################################################
+rm(totalatrisk, totalpop, standardpop, pop, fractions, Year)
+##################################
+# Section 2: Summary of uterine cancer deaths
+##################################
 
-dat %>%
+data %>%
   summarise("Number of deaths" = sum(Count))
 
-dat %>%
+data %>%
   group_by(Age) %>%
   summarise("Number of deaths" = sum(Count))
 
@@ -199,17 +196,11 @@ Age %>%
   filter(Year == 2022 & corrected=="rate")
 
 
-### by histotype and year
-dat %>%
-  filter(!Age=="0–14" & !Age=="15–24" & Year==2020) %>%
-  group_by(Subtype) %>% 
-  summarise("Number of cases" = sum(Count))
+##################################################################################################
+# Section 3: Plotting hysterectomy-corrected mortality rates for each age group and overall (Age–standardised)
+##################################################################################################
 
-
-
-###########################################################################################  
-
-###Plotting hysterectomy-corrected mortality rates for each age group and overall (Age–standardised)
+options(OutDec = "·")
 
 joinpoint <- read_excel("Mortalityresults.xlsx") %>%
   rename(Joinpoint = `Joinpoint Location`) %>%
@@ -290,24 +281,255 @@ p <- ggplot() +
   scale_shape_manual(values=c("Joinpoints"=16, "Observed Rate"=17, "Modeled Trend"=19)) +
   guides(color="none") + 
   scale_color_manual(values = custom_colors)
+
 p
 
 ggsave("Mortality.jpeg", plot=p, width=15, height=9, dpi=300)
 
 
 
+###########################################
+# SECTION 4: PAF calculations for mortality
+###########################################
 
-##Plotting uncorrected rates
-Age <- Age %>%
-  filter(corrected=="rate_nc")
+library(deltapif)
 
-p <- ggplot() +
-  geom_point(data=Age, aes(x=Year, y=rate, color=Age)) +  
-  xlim(2000, 2025) +
-  ylab("Rate (per 100, 000 women)") +
-  theme_cowplot(12) + 
-  facet_wrap(~factor(Age, levels=c("Age–standardised", "25–34", "35–44", "45–54", "55–64", "65–74", "75–84", "85+")), scales="free", nrow=4) 
-p
+# PAFs assuming 10-year latent period
+
+dat <- data %>%
+  select(Age, Year)
+
+prev <- read_excel("OW OB prevalence.xlsx")
+RRs <- read_excel("Relative risks_Mortality.xlsx")
+
+dat <- dat %>%
+  merge(prev, by = c("Year", "Age")) %>% 
+  merge(RRs, by="Exposure") %>%
+  arrange(Year, Age) %>%
+  mutate(P = Prevalence / 100) %>%
+  group_by(Year, Age) %>%
+  summarise(
+    P_vec = list(P),
+    RR_vec = list(RR),
+    RRLL_vec = list(RRLL),
+    RRUL_vec = list(RRUL),
+    .groups = "drop"
+  )
+results_df <- dat %>%
+  pmap_dfr(function(Year, Age, P_vec, RR_vec, RRLL_vec, RRUL_vec) {
+    
+    # Convert lists to vectors
+    P_vec <- unlist(P_vec)
+    RR_vec <- unlist(RR_vec)
+    RRLL_vec <- unlist(RRLL_vec)
+    RRUL_vec <- unlist(RRUL_vec)
+    
+    # Compute log-RR and variance
+    beta <- log(RR_vec)
+    var_beta <- ((log(RRUL_vec) - log(RRLL_vec)) / (2*1.96))^2
+    var_beta[1] <- 0
+    var_beta <- diag(var_beta)
+    
+    # Compute PAF
+    res <- paf(p = P_vec, beta = beta, var_beta = var_beta)
+    
+    # Extract point estimate and CI
+    PAF_val <- coef(res)
+    CI <- confint(res)
+    
+    data.frame(
+      Age = Age,
+      Year = Year,
+      PAF = round(PAF_val, 2),
+      PAF_LL = round(CI[1], 2),
+      PAF_UL = round(CI[2], 2)
+    )
+  })
+results_df
+
+
+Nobs <- data %>%
+  select(Age, Year, Count) %>%
+  rename(Nobs = Count)
+
+results_df <- results_df %>%
+  merge(Nobs, by=c("Year", "Age")) %>%
+  mutate(
+    Nexc = round((Nobs*PAF), 0),
+    Nexc_LL = round((Nobs*PAF_LL),0),
+    Nexc_UL = round((Nobs*PAF_UL),0))
+
+totals <- results_df %>%
+  group_by(Year) %>%
+  summarise(
+    Age = "Total",
+    Nobs = sum(Nobs, na.rm = TRUE),
+    Nexc = sum(Nexc, na.rm = TRUE),
+    Nexc_LL = sum(Nexc_LL, na.rm = TRUE),
+    Nexc_UL = sum(Nexc_UL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(PAF = Nexc/Nobs,
+         PAF_LL = Nexc_LL/Nobs,
+         PAF_UL = Nexc_UL/Nobs)
+results_df <- bind_rows(results_df, totals)
+results_df
+
+
+results_wide <- results_df %>%
+  mutate(
+    PAF_pct = round(PAF * 100, 0),
+    LL_pct = round(PAF_LL * 100, 0),
+    UL_pct = round(PAF_UL * 100, 0),
+    PAF_CI = paste0(PAF_pct, " (", LL_pct, ", ", UL_pct, ")"),
+    Nexc_CI = paste0("(", Nexc_LL, ", ", Nexc_UL, ")")
+  ) %>%
+  select(Age, Year, PAF_CI, Nobs, Nexc, Nexc_CI) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = c(PAF_CI, Nobs, Nexc, Nexc_CI),
+    names_glue = "{Year}_{.value}"
+  )
+
+# Reorder columns by year 
+years <- c(2001, 2010, 2020)
+
+results_wide <- results_wide %>%
+  select(
+    Age,
+    unlist(lapply(years, function(y) {
+      c(
+        paste0(y, "_PAF_CI"),
+        paste0(y, "_Nobs"),
+        paste0(y, "_Nexc"),
+        paste0(y, "_Nexc_CI")
+      )
+    }))
+  ) %>%
+  arrange(Age)
+results_wide
+
+write.csv(results_wide, "PAF mortality.csv")
+
+
+# Sensitivity analysis assuming 5-year latent period
+
+dat <- data %>%
+  select(Age, Year)
+
+prev <- read_excel("OW OB prevalence.xlsx")
+RRs <- read_excel("Relative risks_Mortality.xlsx")
+
+dat <- dat %>%
+  merge(prev, by = c("Year", "Age")) %>% 
+  merge(RRs, by="Exposure") %>%
+  arrange(Year, Age) %>%
+  mutate(P = Prevalence_5year / 100) %>%
+  group_by(Year, Age) %>%
+  summarise(
+    P_vec = list(P),
+    RR_vec = list(RR),
+    RRLL_vec = list(RRLL),
+    RRUL_vec = list(RRUL),
+    .groups = "drop"
+  )
+results_df <- dat %>%
+  pmap_dfr(function(Year, Age, P_vec, RR_vec, RRLL_vec, RRUL_vec) {
+    
+    # Convert lists to vectors
+    P_vec <- unlist(P_vec)
+    RR_vec <- unlist(RR_vec)
+    RRLL_vec <- unlist(RRLL_vec)
+    RRUL_vec <- unlist(RRUL_vec)
+    
+    # Compute log-RR and variance
+    beta <- log(RR_vec)
+    var_beta <- ((log(RRUL_vec) - log(RRLL_vec)) / (2*1.96))^2
+    var_beta[1] <- 0
+    var_beta <- diag(var_beta)
+    
+    # Compute PAF
+    res <- paf(p = P_vec, beta = beta, var_beta = var_beta)
+    
+    # Extract point estimate and CI
+    PAF_val <- coef(res)
+    CI <- confint(res)
+    
+    data.frame(
+      Age = Age,
+      Year = Year,
+      PAF = round(PAF_val, 2),
+      PAF_LL = round(CI[1], 2),
+      PAF_UL = round(CI[2], 2)
+    )
+  })
+results_df
+
+
+Nobs <- data %>%
+  select(Age, Year, Count) %>%
+  rename(Nobs = Count)
+
+results_df <- results_df %>%
+  merge(Nobs, by=c("Year", "Age")) %>%
+  mutate(
+    Nexc = round((Nobs*PAF), 0),
+    Nexc_LL = round((Nobs*PAF_LL),0),
+    Nexc_UL = round((Nobs*PAF_UL),0))
+
+totals <- results_df %>%
+  group_by(Year) %>%
+  summarise(
+    Age = "Total",
+    Nobs = sum(Nobs, na.rm = TRUE),
+    Nexc = sum(Nexc, na.rm = TRUE),
+    Nexc_LL = sum(Nexc_LL, na.rm = TRUE),
+    Nexc_UL = sum(Nexc_UL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(PAF = Nexc/Nobs,
+         PAF_LL = Nexc_LL/Nobs,
+         PAF_UL = Nexc_UL/Nobs)
+results_df <- bind_rows(results_df, totals)
+results_df
+
+
+results_wide <- results_df %>%
+  mutate(
+    PAF_pct = round(PAF * 100, 0),
+    LL_pct = round(PAF_LL * 100, 0),
+    UL_pct = round(PAF_UL * 100, 0),
+    PAF_CI = paste0(PAF_pct, " (", LL_pct, ", ", UL_pct, ")"),
+    Nexc_CI = paste0("(", Nexc_LL, ", ", Nexc_UL, ")")
+  ) %>%
+  select(Age, Year, PAF_CI, Nobs, Nexc, Nexc_CI) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = c(PAF_CI, Nobs, Nexc, Nexc_CI),
+    names_glue = "{Year}_{.value}"
+  )
+
+# Reorder columns by year 
+years <- c(2001, 2010, 2020)
+
+results_wide <- results_wide %>%
+  select(
+    Age,
+    unlist(lapply(years, function(y) {
+      c(
+        paste0(y, "_PAF_CI"),
+        paste0(y, "_Nobs"),
+        paste0(y, "_Nexc"),
+        paste0(y, "_Nexc_CI")
+      )
+    }))
+  ) %>%
+  arrange(Age)
+results_wide
+
+
+write.csv(results_wide, "PAF mortality 5 year lag.csv")
+
 
 
 
